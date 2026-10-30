@@ -1,0 +1,41 @@
+name: release
+
+on:
+ workflow_dispatch
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  releaser_release:
+    name: Releaser release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.releaser_release.outputs.tag }}
+    permissions:
+      contents: write
+    steps:
+      - id: check_out_code
+        name: Check out code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: releaser_release
+        name: Releaser release
+        uses: "./.github/actions/releaser_release"
+        with:
+          dagger_cloud_token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          shiryu_version: "feat/add-python-sdk-release-add-deploy"
+          sdk_language: "python"
+          auth_token: ${{ secrets.AUTH_TOKEN }}
+          auth_user_name: "x-access-token"
+          branch: "feat/add-python-sdk-release-add-deploy"
+          platform: "linux/amd64"
+          vcs_user_email: "ci@shiryu.dev"
+          vcs_user_name: "CI Release Bot"

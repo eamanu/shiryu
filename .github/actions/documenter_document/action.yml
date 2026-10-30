@@ -1,0 +1,30 @@
+name: "documenter document"
+description: "Runs documenter document function on a project"
+
+inputs:
+  dagger_cloud_token:
+    required: true
+    description: "Dagger cloud token"
+  shiryu_version:
+    required: false
+    description: "Shiryu version"
+    default: "feat/add-python-sdk-release-add-deploy"
+  sdk_language:
+    description: "SDK programming language"
+    default: "python"
+  platform:
+    description: "Platform config OS and architecture in a Container"
+    default: "linux/amd64"
+
+runs:
+  using: "composite"
+  steps:
+    - id: call_dagger_documenter_document
+      name: Call Dagger Documenter document
+      uses: dagger/dagger-for-github@v8.4.0
+      with:
+        version: "v1.0.0-beta.20"
+        verb: call
+        module: github.com/eamanu/shiryu@${{ inputs.shiryu_version }}
+        args: ${{ inputs.sdk_language }} documenter document --platform="${{ inputs.platform }}" export --path=./site
+        cloud-token: ${{ inputs.dagger_cloud_token }}

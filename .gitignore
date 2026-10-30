@@ -1,4 +1,7 @@
 *.swp
-__pycache__/
+/.coverage
+/.ruff_cache/
 /.venv/
-/sdk/
+/dist/
+/site/
+__pycache__/

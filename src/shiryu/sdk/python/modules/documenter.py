@@ -1,0 +1,538 @@
+"""documenter module."""
+
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Final, final
+
+import dagger
+from dagger_clients.core import Changeset, Container, Directory
+
+from shiryu.sdk.common.utils import PROJECT_SOURCE_CODE_FOLDER
+
+from ....utils.dagger.directory import directory_with_new_file
+from ....utils.template import Mapping, Template, TemplateFile
+from ...common.context import DaggerModuleMetadata
+from ...common.module import (
+    PLATFORM_DAGGER_DEFAULT,
+    PlatformDaggerType,
+    PlatformType,
+    ProjectMetadata,
+    SCMType,
+)
+from ...common.scm import (
+    GitHubJobEnvironment,
+    GitHubWorkflowId,
+    GitHubWorkflowJobStep,
+    GitHubWorkflowStepInputParameter,
+    GitLabArtifacts,
+    GitLabStageId,
+    GitLabStageJob,
+    build_github_action,
+    build_github_workflow_checkout_job,
+    build_github_workflow_job,
+    build_gitlab_job,
+    build_gitlab_stage_job,
+)
+from ...common.templates import COMMON_JINJA_ENVIRONMENT
+from ..context import PythonModuleInitContextDirectory
+from ..module import PythonModule, PythonModuleInitializer
+from ..templates import PYTHON_JINJA_ENVIRONMENT
+from ..utils import get_package_name_canonical
+
+GITHUB_PAGES_ENVIRONMENT: Final = GitHubJobEnvironment(
+    "github-pages", "${{ steps.deployment.outputs.page_url }}"
+)
+
+PROJECT_DOCUMENTATION_FOLDER: Final = "docs"
+PROJECT_DOCUMENTATION_PATH: Final = PurePosixPath(PROJECT_DOCUMENTATION_FOLDER)
+PROJECT_SITE_FOLDER: Final = "site"
+PROJECT_SITE_PATH: Final = PurePosixPath(PROJECT_SITE_FOLDER)
+PROJECT_SCRIPTS_FOLDER: Final = "scripts"
+PROJECT_SCRIPTS_PATH: Final = PurePosixPath(PROJECT_SCRIPTS_FOLDER)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class NavItem:
+    """Represents a single navigation menu item.
+
+    Attributes:
+        title: The display text for the navigation link.
+        url: The destination URL or path for the navigation link.
+    """
+
+    title: str
+    url: str
+
+
+class DocumenterInitializer(PythonModuleInitializer):
+    """DocumenterInitializer class."""
+
+    @classmethod
+    def _init_context_directory(
+        cls,
+        init_context_directory: PythonModuleInitContextDirectory,
+        shiryu_metadata: DaggerModuleMetadata,
+        project_metadata: ProjectMetadata,
+    ) -> PythonModuleInitContextDirectory:
+        """Initialization directory context used in the SDK module directory initialization.
+
+        Args:
+            init_context_directory: SDK module initialization directory context.
+            shiryu_metadata: Shiryu metadata.
+            project_metadata: Project metadata.
+
+        Returns:
+            The updated SDK module initialization directory context.
+        """
+        init_context_directory = super()._init_context_directory(
+            init_context_directory, shiryu_metadata, project_metadata
+        )
+        dagger_version = shiryu_metadata.dagger_version
+        shiryu_version = shiryu_metadata.git_tag_or_branch
+        sdk_module_cls = Documenter
+        sdk_language = sdk_module_cls._sdk_name()
+        sdk_module_name = sdk_module_cls.name()
+        sdk_module_function = sdk_module_cls.document
+        export_path = PROJECT_SITE_PATH
+        github_action = build_github_action(
+            sdk_language=sdk_language,
+            sdk_module_name=sdk_module_name,
+            sdk_module_function=sdk_module_function,
+            dagger_version=dagger_version,
+            shiryu_version=shiryu_version,
+            export_path=export_path,
+        )
+        gitlab_documentation_folder_output = "public"
+        gitlab_job = build_gitlab_job(
+            sdk_language=sdk_language,
+            sdk_module_name=sdk_module_name,
+            sdk_module_function=sdk_module_function,
+            shiryu_version=shiryu_version,
+            variables=(),
+            pre_script=(),
+            export_path=export_path,
+            post_script=(
+                f"mkdir {gitlab_documentation_folder_output}",
+                f"cp --recursive {PROJECT_SITE_PATH}/* {gitlab_documentation_folder_output}/",
+            ),
+            artifacts=GitLabArtifacts(paths=(gitlab_documentation_folder_output,)),
+        )
+        gitlab_pages_stage_job = GitLabStageJob(
+            path=None,
+            name="pages",
+            extends=(),
+            variables=(),
+            stage=GitLabStageId.DOCUMENTATION.value.name,
+            needs=("documentation_documenter_document",),
+            rules=(),
+            script=('echo "Deploying site"',),
+            artifacts=GitLabArtifacts(paths=(gitlab_documentation_folder_output,)),
+        )
+        pre_steps = (build_github_workflow_checkout_job(),)
+        release_pre_steps = (
+            build_github_workflow_checkout_job(
+                (
+                    GitHubWorkflowStepInputParameter(
+                        "ref", "${{ needs.builder_publish.outputs.last_tag }}"
+                    ),
+                    GitHubWorkflowStepInputParameter("fetch-depth", "0"),
+                )
+            ),
+        )
+
+        return init_context_directory.evolve(
+            vcs=init_context_directory.vcs.evolve(
+                exclude_files_folders=init_context_directory.vcs.exclude_files_folders
+                | {f"/{PROJECT_SITE_PATH}/"}
+            ),
+            scm=init_context_directory.scm.evolve(
+                github_actions_workflows=init_context_directory.scm.github_actions_workflows.evolve(
+                    actions=init_context_directory.scm.github_actions_workflows.actions
+                    | {github_action},
+                    workflows=init_context_directory.scm.github_actions_workflows.workflows.add(
+                        GitHubWorkflowId.DEPLOY,
+                        build_github_workflow_job(
+                            sdk_language=sdk_language,
+                            github_action=github_action,
+                            shiryu_version=shiryu_version,
+                            job_environment=GITHUB_PAGES_ENVIRONMENT,
+                            pre_steps=release_pre_steps,
+                            post_steps=(
+                                GitHubWorkflowJobStep(
+                                    "upload_artifact",
+                                    "Upload artifact",
+                                    "actions/upload-pages-artifact@v5",
+                                    (
+                                        GitHubWorkflowStepInputParameter(
+                                            "path", f"{PROJECT_SITE_PATH}/"
+                                        ),
+                                    ),
+                                ),
+                                GitHubWorkflowJobStep(
+                                    "deploy_to_github_pages",
+                                    "Deploy to GitHub pages",
+                                    "actions/deploy-pages@v5",
+                                    (),
+                                ),
+                            ),
+                            needs=("builder_publish",),
+                            permissions=(
+                                ("contents", "read"),
+                                ("pages", "write"),
+                                ("id-token", "write"),
+                            ),
+                        ),
+                    )
+                    .add(
+                        GitHubWorkflowId.DOCUMENTATION,
+                        build_github_workflow_job(
+                            sdk_language=sdk_language,
+                            github_action=github_action,
+                            shiryu_version=shiryu_version,
+                            job_environment=GITHUB_PAGES_ENVIRONMENT,
+                            pre_steps=pre_steps,
+                            post_steps=(
+                                GitHubWorkflowJobStep(
+                                    "upload_artifact",
+                                    "Upload artifact",
+                                    "actions/upload-pages-artifact@v5",
+                                    (
+                                        GitHubWorkflowStepInputParameter(
+                                            "path", f"{PROJECT_SITE_PATH}/"
+                                        ),
+                                    ),
+                                ),
+                                GitHubWorkflowJobStep(
+                                    "deploy_to_github_pages",
+                                    "Deploy to GitHub pages",
+                                    "actions/deploy-pages@v5",
+                                    (),
+                                ),
+                            ),
+                        ),
+                    )
+                    .add(
+                        GitHubWorkflowId.QUALITY,
+                        build_github_workflow_job(
+                            sdk_language=sdk_language,
+                            github_action=github_action,
+                            shiryu_version=shiryu_version,
+                            job_environment=None,
+                            pre_steps=pre_steps,
+                            post_steps=(),
+                        ),
+                    ),
+                ),
+                gitlab_jobs_stages=init_context_directory.scm.gitlab_jobs_stages.evolve(
+                    jobs=init_context_directory.scm.gitlab_jobs_stages.jobs | {gitlab_job},
+                    stages=init_context_directory.scm.gitlab_jobs_stages.stages.add(
+                        GitLabStageId.DOCUMENTATION,
+                        build_gitlab_stage_job(
+                            gitlab_stage_id=GitLabStageId.DOCUMENTATION, gitlab_job=gitlab_job
+                        ),
+                    )
+                    .add(GitLabStageId.DOCUMENTATION, gitlab_pages_stage_job)
+                    .add(
+                        GitLabStageId.RELEASE,
+                        build_gitlab_stage_job(
+                            gitlab_stage_id=GitLabStageId.RELEASE,
+                            gitlab_job=gitlab_job,
+                            needs=("release_releaser_release",),
+                        ),
+                    )
+                    .add(
+                        GitLabStageId.QUALITY,
+                        build_gitlab_stage_job(
+                            gitlab_stage_id=GitLabStageId.QUALITY, gitlab_job=gitlab_job
+                        ),
+                    ),
+                ),
+            ),
+            dependency_groups=init_context_directory.dependency_groups.add(
+                sdk_module_name,
+                {
+                    # https://github.com/mkdocstrings/python/releases/tag/1.11.0
+                    # >= 1.11.0: Hook into autorefs to provide context around cross-ref errors
+                    "mkdocstrings-python >= 1.11.0",
+                    # https://github.com/zensical/zensical/releases/tag/v0.0.11
+                    # # >= 0.0.11: Support mkdocstrings plugin
+                    # https://github.com/zensical/zensical/releases/tag/v0.0.22
+                    # # >= 0.0.22: Support autorefs plugin
+                    # https://github.com/zensical/zensical/releases/tag/v0.0.58
+                    # # >= 0.0.58: Support literate-nav plugin
+                    # https://github.com/zensical/zensical/releases/tag/v0.0.66
+                    # # >= 0.0.66: Support api-autonav plugin
+                    "zensical >= 0.0.66",
+                },
+            ),
+        )
+
+    @final
+    @classmethod
+    def _zensical_toml_template_file(cls) -> TemplateFile:
+        """zensical.toml template file.
+
+        Returns:
+            The zensical.toml template file.
+        """
+        return TemplateFile(Path("zensical.toml"))
+
+    @classmethod
+    async def _init_directory(
+        cls,
+        init_directory: Directory,
+        init_context_directory: PythonModuleInitContextDirectory,
+        project_metadata: ProjectMetadata,
+        scm: SCMType,
+        platform: PlatformType,
+    ) -> Directory:
+        """Build the initialization directory.
+
+        Args:
+            init_directory: The dagger directory to initialize.
+            init_context_directory: SDK module initialization directory context.
+            project_metadata: Project metadata.
+            scm: Project Source Code Management (SCM) list to be targeted or configured.
+            platform: The container platform used for initialization.
+
+        Returns:
+            The initialization directory.
+        """
+        init_directory = await super()._init_directory(
+            init_directory, init_context_directory, project_metadata, scm, platform
+        )
+        # <documentation>/**/index.md
+        project_documentation_path = PROJECT_DOCUMENTATION_PATH
+        index_md_file_path = PurePosixPath("index.md")
+        # <documentation>/index.md
+        documentation_md_template_mapping: Mapping = {}
+        documentation_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(
+                Path("documentation.md"),
+                output_directory=project_documentation_path,
+                output_file_name=index_md_file_path,
+            ),
+            documentation_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, documentation_md_template)
+        # <documentation>/explanation/index.md
+        explanation_title = "Explanation"
+        explanation_path = PurePosixPath("explanation")
+        explanation_md_template_mapping: Mapping = {"title": explanation_title}
+        explanation_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(
+                Path("explanation.md"),
+                output_directory=project_documentation_path / explanation_path,
+                output_file_name=index_md_file_path,
+            ),
+            explanation_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, explanation_md_template)
+        # <documentation>/how-to-guides/index.md
+        how_to_guides_title = "How-To Guides"
+        how_to_guides_path = PurePosixPath("how-to-guides")
+        how_to_guides_md_template_mapping: Mapping = {"title": how_to_guides_title}
+        how_to_guides_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(
+                Path("how_to_guides.md"),
+                output_directory=project_documentation_path / how_to_guides_path,
+                output_file_name=index_md_file_path,
+            ),
+            how_to_guides_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, how_to_guides_md_template)
+        # <documentation>/reference/index.md
+        reference_title = "Reference"
+        reference_path = PurePosixPath("reference")
+        reference_md_template_mapping: Mapping = {"title": reference_title}
+        reference_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(
+                Path("reference.md"),
+                output_directory=project_documentation_path / reference_path,
+                output_file_name=index_md_file_path,
+            ),
+            reference_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, reference_md_template)
+        # <documentation>/reference/api-reference/index.md
+        api_reference_title = "API Reference"
+        reference_api_reference_path = reference_path / PurePosixPath("api-reference")
+        api_reference_md_template_mapping: Mapping = {"title": api_reference_title}
+        api_reference_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(
+                Path("api-reference.md"),
+                output_directory=project_documentation_path / reference_api_reference_path,
+                output_file_name=index_md_file_path,
+            ),
+            api_reference_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, api_reference_md_template)
+        # <documentation>/tutorials/index.md
+        tutorials_title = "Tutorials"
+        tutorials_path = PurePosixPath("tutorials")
+        tutorials_md_template_mapping: Mapping = {"title": tutorials_title}
+        tutorials_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(
+                Path("tutorials.md"),
+                output_directory=project_documentation_path / tutorials_path,
+                output_file_name=index_md_file_path,
+            ),
+            tutorials_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, tutorials_md_template)
+        # <documentation>/SUMMARY.md
+        summary_md_path = Path("SUMMARY.md")
+        summary_md_template_mapping: Mapping = {
+            "nav": (
+                (NavItem(title="Home", url=str(index_md_file_path)), None),
+                (
+                    NavItem(title=tutorials_title, url=str(tutorials_path / index_md_file_path)),
+                    None,
+                ),
+                (
+                    NavItem(
+                        title=how_to_guides_title, url=str(how_to_guides_path / index_md_file_path)
+                    ),
+                    None,
+                ),
+                (
+                    NavItem(title=reference_title, url=str(reference_path / index_md_file_path)),
+                    (NavItem(title=api_reference_title, url=f"{reference_api_reference_path}/"),),
+                ),
+                (
+                    NavItem(
+                        title=explanation_title, url=str(explanation_path / index_md_file_path)
+                    ),
+                    None,
+                ),
+            )
+        }
+        summary_md_template = Template(
+            COMMON_JINJA_ENVIRONMENT,
+            TemplateFile(summary_md_path, output_directory=project_documentation_path),
+            summary_md_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, summary_md_template)
+        # zensical.toml
+        project_name = project_metadata.name
+        project_authors_names = ", ".join([author.name for author in project_metadata.authors])
+        zensical_toml_template_mapping: Mapping = {
+            "project_name": project_name,
+            "project_authors_names": project_authors_names,
+            "project_site_path": PROJECT_SITE_FOLDER,
+            "project_docs_path": PROJECT_DOCUMENTATION_FOLDER,
+            "project_src_path": PROJECT_SOURCE_CODE_FOLDER,
+            "nav_file": str(summary_md_path),
+            "project_src_module_path": str(
+                PurePosixPath(PROJECT_SOURCE_CODE_FOLDER) / get_package_name_canonical(project_name)
+            ),
+            "api_reference_title": api_reference_title,
+            "reference_api_reference_path": reference_api_reference_path,
+        }
+        zensical_toml_template = Template(
+            PYTHON_JINJA_ENVIRONMENT,
+            cls._zensical_toml_template_file(),
+            zensical_toml_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, zensical_toml_template)
+        return init_directory
+
+
+@dagger.object_type
+class Documenter(PythonModule):
+    """Python SDK documenter."""
+
+    @staticmethod
+    def _initializer_cls() -> type[DocumenterInitializer]:
+        """Initializer class.
+
+        Returns:
+            The initializer class.
+        """
+        return DocumenterInitializer
+
+    @final
+    @classmethod
+    def __document(cls, container: Container) -> Directory:
+        """Document pipeline.
+
+        Args:
+            container: Project container.
+
+        Returns:
+            The directory with the documentation files.
+        """
+        initializer = cls._initializer_cls()
+        zensical_toml_file_name = initializer._zensical_toml_template_file().file_name
+        zensical_command = cls._build_uv_run_command(
+            ["zensical", "build", f"--config-file={zensical_toml_file_name}"]
+        )
+        return container.with_exec(zensical_command).directory(PROJECT_SITE_FOLDER)
+
+    @final
+    @dagger.function
+    async def document(
+        self, *, platform: PlatformDaggerType = PLATFORM_DAGGER_DEFAULT
+    ) -> Changeset:
+        """Run documenter document in the project of the provided source Directory."""
+        source = self.source
+        exclude = []
+        container = await self._exec_container(source, exclude, platform)
+        try:
+            return self.__document(container).changes(source)
+        except dagger.ExecError as exception:
+            self.log(exception)
+
+            raise
+
+
+#     @final
+#     @dagger.function
+#     async def audit(
+#         self,
+#         *,
+#         platform: PlatformDaggerType = PLATFORM_DAGGER_DEFAULT,
+#     ) -> str | None:
+#         """Audit source code docstrings."""
+#         exclude = []
+#         workspace = await self._exec_container(self.source, exclude, platform)
+#
+#         # Extract source code context before calling LLM
+#         source_code_dump = await workspace.with_exec(
+#             [
+#                 "sh",
+#                 "-c",
+#                 f"find {PROJECT_SOURCE_CODE_FOLDER} -name '*.py' -exec echo '=== FILE: {{}} ===' \\; -exec cat {{}} \\;",  # noqa: E501
+#             ]
+#         ).stdout()
+#
+#         # Render prompt template
+#         documenter_audit_propmpt_txt_template_mapping: Mapping = {
+#             "source_code_dump": source_code_dump,
+#             "project_src_path": PROJECT_SOURCE_CODE_FOLDER,
+#         }
+#         documenter_audit_prompt_txt_template = Template(
+#             PYTHON_JINJA_ENVIRONMENT,
+#             TemplateFile(Path("documenter_audit_prompt.txt")),
+#             documenter_audit_propmpt_txt_template_mapping,
+#         )
+#
+#         prompt = documenter_audit_prompt_txt_template.contents
+#         report = await (
+#             dagger.dag.llm(model="gemini-3.6-flash")
+#             .with_prompt(prompt)
+#             .loop()
+#             .last_reply()
+#         )
+#
+#         return report
+
+
+sdk_module: Final = Documenter

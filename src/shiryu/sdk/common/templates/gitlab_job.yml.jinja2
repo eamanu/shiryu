@@ -1,0 +1,22 @@
+include:
+  - local: ".gitlab/jobs/.dagger.yml"
+
+{{ name }}:
+  extends: .dagger
+  variables:
+    {% for variable in variables %}
+    {{variable.name}}: "{{variable.value}}"
+    {% endfor %}
+  script:
+    {% for script in scripts %}
+    - {{ script }}
+    {% endfor %}
+  {% if artifacts is not none %}
+  artifacts:
+    {% if artifacts.paths|length != 0 %}
+    paths:
+      {% for path in artifacts.paths %}
+      - {{ path }}
+      {% endfor %}
+    {% endif %}
+  {% endif %}

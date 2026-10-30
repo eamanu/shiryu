@@ -9,14 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: Initial commit
-
-### Changed
-
-### Deprecated
-
-### Removed
-
-### Fixed
-
-### Security
+- Initial commit
+- Add python SDK skeleton
+- Add python SDK command auditor
+- Add python SDK command builder
+- Add python SDK command checker
+- Add python SDK command documenter
+- Add python SDK command init
+- Add python SDK command jupyter
+- Add python SDK command linter
+- Add python SDK command tester
+- Add SCM support for GitLab and GitHub

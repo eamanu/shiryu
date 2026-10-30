@@ -1,0 +1,30 @@
+name: "tester unit"
+description: "Runs tester unit function on a project"
+
+inputs:
+  dagger_cloud_token:
+    required: true
+    description: "Dagger cloud token"
+  shiryu_version:
+    required: false
+    description: "Shiryu version"
+    default: "feat/add-python-sdk-release-add-deploy"
+  sdk_language:
+    description: "SDK programming language"
+    default: "python"
+  platform:
+    description: "Platform config OS and architecture in a Container"
+    default: "linux/amd64"
+
+runs:
+  using: "composite"
+  steps:
+    - id: call_dagger_tester_unit
+      name: Call Dagger Tester unit
+      uses: dagger/dagger-for-github@v8.4.0
+      with:
+        version: "v1.0.0-beta.20"
+        verb: call
+        module: github.com/eamanu/shiryu@${{ inputs.shiryu_version }}
+        args: ${{ inputs.sdk_language }} tester unit --platform="${{ inputs.platform }}"
+        cloud-token: ${{ inputs.dagger_cloud_token }}
