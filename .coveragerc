@@ -1,0 +1,11 @@
+[run]
+branch = True
+source = src
+omit = *.jinja2
+
+[report]
+fail_under = 85
+show_missing = True
+
+[xml]
+output = coverage.xml

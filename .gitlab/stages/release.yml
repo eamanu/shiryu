@@ -1,0 +1,8 @@
+include:
+  - local: ".gitlab/jobs/.releaser_release.yml"
+
+release_releaser_release:
+  extends: .releaser_release
+  stage: release
+  needs: []
+  when: manual

@@ -1,0 +1,90 @@
+name: {{ name }}
+
+on:
+  {% if on.keys()|length == 1 and on.values()|list|first is none %} {{ on.keys()|list|first }}
+  {% else %}
+  {% for action, action_properties in on|dictsort %}
+  {% if action_properties is none %}
+  {{ action }}:
+  {% else %}
+  {{ action }}:
+    {% for action_property_name, action_property_value in action_properties.items() %}
+    {% if action_property_value is none %}
+    {{ action_property_name }}:
+    {% elif action_property_value is string %}
+    {{ action_property_name }}: {{ action_property_value }}
+    {% else %}
+    {{ action_property_name }}:
+      {% for value in action_property_value %}
+      - {{ value }}
+      {% endfor %}
+    {% endif %}
+    {% endfor %}
+  {% endif %}
+  {% endfor %}
+  {% endif %}
+
+{% if concurrency is not none %}
+concurrency:
+  group: "{{ concurrency[0] }}"
+  cancel-in-progress: {{ concurrency[1]|lower }}
+
+{% endif %}
+{% if permissions|length != 0 %}
+permissions:
+  {% for permission, access in permissions %}
+  {{ permission }}: {{ access }}
+  {% endfor %}
+
+{% endif %}
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  {% for job in jobs|sort(attribute="id") %}
+  {{ job.id }}:
+    name: {{ job.name }}
+    {% if job.environment is not none %}
+    environment:
+    {% if job.environment.url is none %} {{ job.environment.name }}{% else %}
+      name: {{ job.environment.name }}
+      url: {{ job.environment.url }}
+    {% endif %}
+    {% endif %}
+    runs-on: ubuntu-latest
+    {% if job.needs|length != 0 %}
+    needs: {{ job.needs|join(", ") }}
+    {% endif %}
+    {% if job.condition is not none %}
+    if: ${{ "{{" }} {{ job.condition }} {{ "}}" }}
+    {% endif %}
+    {% if job.outputs|length != 0 %}
+    outputs:
+      {% for output_name, output_value in job.outputs %}
+      {{ output_name }}: {{ output_value }}
+      {% endfor %}
+    {% endif %}
+    {% if job.permissions|length != 0 %}
+    permissions:
+      {% for permission, access in job.permissions %}
+      {{ permission }}: {{ access }}
+      {% endfor %}
+    {% endif %}
+    steps:
+      {% for step in job.steps %}
+      - id: {{ step.id }}
+        name: {{ step.name }}
+        uses: {{ step.uses }}
+        {% if step.with_|length != 0 %}
+        with:
+          {% for step_with_ in step.with_ %}
+          {% if "\n" in step_with_.value %}
+          {{ step_with_.name }}: |
+{{ step_with_.value|indent(12, true) }}
+          {% else %}
+          {{ step_with_.name }}: {{ step_with_.value }}
+          {% endif %}
+          {% endfor %}
+        {% endif %}
+      {% endfor %}
+  {% endfor %}

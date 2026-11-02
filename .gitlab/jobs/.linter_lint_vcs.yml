@@ -1,0 +1,15 @@
+include:
+  - local: ".gitlab/jobs/.dagger.yml"
+
+.linter_lint_vcs:
+  extends: .dagger
+  variables:
+    SHIRYU_VERSION: "feat/add-python-sdk-release"
+    SDK_LANGUAGE: "python"
+    GIT_STRATEGY: "fetch"
+    GIT_DEPTH: "0"
+    BRANCH_HISTORY: "True"
+    PLATFORM: "linux/amd64"
+  script:
+    - git fetch origin main:refs/remotes/origin/main || true
+    - dagger --load-module=gitlab.com/fvonbergen1/shiryu@${SHIRYU_VERSION} call ${SDK_LANGUAGE} linter lint-vcs --branch-history="${BRANCH_HISTORY}" --platform="${PLATFORM}"

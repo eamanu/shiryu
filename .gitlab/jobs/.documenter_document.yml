@@ -1,0 +1,16 @@
+include:
+  - local: ".gitlab/jobs/.dagger.yml"
+
+.documenter_document:
+  extends: .dagger
+  variables:
+    SHIRYU_VERSION: "feat/add-python-sdk-release"
+    SDK_LANGUAGE: "python"
+    PLATFORM: "linux/amd64"
+  script:
+    - dagger --load-module=gitlab.com/fvonbergen1/shiryu@${SHIRYU_VERSION} call ${SDK_LANGUAGE} documenter document --platform="${PLATFORM}" export --path=./site
+    - mkdir public
+    - cp --recursive site/* public/
+  artifacts:
+    paths:
+      - public

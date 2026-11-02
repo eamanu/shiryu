@@ -1,0 +1,329 @@
+"""tester module."""
+
+from configparser import ConfigParser
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Final, final
+
+import dagger
+from dagger_clients.core import Container, Directory, ReturnType, core
+
+from ....utils.dagger.directory import directory_with_new_file
+from ....utils.template import Mapping, Template, TemplateFile
+from ...common.context import DaggerModuleMetadata
+from ...common.module import (
+    PLATFORM_DAGGER_DEFAULT,
+    PlatformDaggerType,
+    PlatformType,
+    ProjectMetadata,
+    SCMType,
+)
+from ...common.scm import (
+    GitHubWorkflowId,
+    GitLabStageId,
+    build_github_action,
+    build_github_workflow_checkout_job,
+    build_github_workflow_job,
+    build_gitlab_job,
+    build_gitlab_stage_job,
+)
+from ...common.utils import PROJECT_SOURCE_CODE_FOLDER, PROJECT_TESTS_FOLDER, TESTS_UNIT_PATH
+from ..context import DependencyGroups, PythonModuleInitContextDirectory
+from ..module import PythonModule, PythonModuleInitializer
+from ..templates import PYTHON_JINJA_ENVIRONMENT
+from .checker import Checker
+
+OptionalKeywordType = str | None
+OptionalKeywordDaggerType = Annotated[
+    OptionalKeywordType, dagger.Doc("Run tests that match substring expression")
+]
+OPTIONAL_KEYWORD_DAGGER_DEFAULT: Final = None
+
+
+class TesterInitializer(PythonModuleInitializer):
+    """TesterInitializer class."""
+
+    @final
+    @staticmethod
+    def _coverage_file_name() -> str:
+        """Get the coverage file name.
+
+        Returns:
+            The coverage file name.
+        """
+        return "coverage.xml"
+
+    # @final
+    # @staticmethod
+    # def _coverage_badge_file_name() -> str:
+    #     """Get the coverage badge file name.
+
+    #     Returns:
+    #         The coverage badge file name.
+    #     """
+    #     return "coverage-badge.svg"
+
+    # @final
+    # @classmethod
+    # def _coverage_badge_file_path(cls) -> Path:
+    #     """Get the container project coverage badge file path.
+
+    #     Returns:
+    #         The container project coverage badge file path.
+    #     """
+    #     return PurePosixPath() / cls._coverage_badge_file_name()
+
+    @final
+    @classmethod
+    def _pytest_unit_ini_template_file(cls) -> TemplateFile:
+        """pytest.ini template file.
+
+        Returns:
+            The pytest.ini template file.
+        """
+        return TemplateFile(Path("pytest.ini"), output_file_name=PurePosixPath("pytest.unit.ini"))
+
+    @classmethod
+    def _init_context_directory(
+        cls,
+        init_context_directory: PythonModuleInitContextDirectory,
+        shiryu_metadata: DaggerModuleMetadata,
+        project_metadata: ProjectMetadata,
+    ) -> PythonModuleInitContextDirectory:
+        """Initialization directory context used in the SDK module directory initialization.
+
+        Args:
+            init_context_directory: SDK module initialization directory context.
+            shiryu_metadata: Shiryu metadata.
+            project_metadata: Project metadata.
+
+        Returns:
+            The updated SDK module initialization directory context.
+        """
+        init_context_directory = super()._init_context_directory(
+            init_context_directory, shiryu_metadata, project_metadata
+        )
+        dagger_version = shiryu_metadata.dagger_version
+        shiryu_version = shiryu_metadata.git_tag_or_branch
+        sdk_module_cls = Tester
+        sdk_language = sdk_module_cls._sdk_name()
+        sdk_module_name = sdk_module_cls.name()
+        sdk_module_function = sdk_module_cls.unit
+        github_action = build_github_action(
+            sdk_language=sdk_language,
+            sdk_module_name=sdk_module_name,
+            sdk_module_function=sdk_module_function,
+            dagger_version=dagger_version,
+            shiryu_version=shiryu_version,
+            export_path=None,
+        )
+        gitlab_job = build_gitlab_job(
+            sdk_language=sdk_language,
+            sdk_module_name=sdk_module_name,
+            sdk_module_function=sdk_module_function,
+            shiryu_version=shiryu_version,
+            variables=(),
+            pre_script=(),
+            export_path=None,
+            post_script=(),
+            artifacts=None,
+        )
+        tests_code_dependencies = {
+            # https://docs.pytest.org/en/stable/changelog.html#pytest-7-4-0-2023-06-23
+            # >= 7.4.0: Enhanced the CLI flag for -c to now include --config-file.
+            "pytest >= 7.4.0",
+            # https://github.com/pytest-dev/pytest-asyncio/releases/tag/v0.24.0
+            # https://pytest-asyncio.readthedocs.io/en/stable/reference/changelog.html#id67
+            # >= 0.24.0: Added the asyncio_default_fixture_loop_scope configuration option
+            "pytest-asyncio >= 0.24.0",
+        }
+        pre_steps = (build_github_workflow_checkout_job(),)
+
+        return init_context_directory.evolve(
+            scm=init_context_directory.scm.evolve(
+                github_actions_workflows=init_context_directory.scm.github_actions_workflows.evolve(
+                    actions=init_context_directory.scm.github_actions_workflows.actions
+                    | {github_action},
+                    workflows=init_context_directory.scm.github_actions_workflows.workflows.add(
+                        GitHubWorkflowId.QUALITY,
+                        build_github_workflow_job(
+                            sdk_language=sdk_language,
+                            github_action=github_action,
+                            shiryu_version=shiryu_version,
+                            job_environment=None,
+                            pre_steps=pre_steps,
+                            post_steps=(),
+                        ),
+                    ),
+                ),
+                gitlab_jobs_stages=init_context_directory.scm.gitlab_jobs_stages.evolve(
+                    jobs=init_context_directory.scm.gitlab_jobs_stages.jobs | {gitlab_job},
+                    stages=init_context_directory.scm.gitlab_jobs_stages.stages.add(
+                        GitLabStageId.QUALITY,
+                        build_gitlab_stage_job(
+                            gitlab_stage_id=GitLabStageId.QUALITY, gitlab_job=gitlab_job
+                        ),
+                    ),
+                ),
+            ),
+            dependency_groups=init_context_directory.dependency_groups.add(
+                sdk_module_name,
+                tests_code_dependencies
+                | {
+                    # https://pytest-cov.readthedocs.io/en/latest/changelog.html#id141
+                    # >= 2.3.0: Add support for specifying output location for html, xml, and
+                    #   annotate report.
+                    "pytest-cov >= 2.3.0",
+                    # https://pytest-xdist.readthedocs.io/en/latest/changelog.html#pytest-xdist-1-18-0-2017-06-26
+                    # >= 1.18.0: Add long option --numprocesses as alternative for -n.
+                    "pytest-xdist[psutil] >= 1.18.0",
+                },
+            ).merge(DependencyGroups({Checker.name(): tests_code_dependencies})),
+            source_code_files_folders=init_context_directory.source_code_files_folders
+            | {PROJECT_TESTS_FOLDER},
+        )
+
+    @classmethod
+    async def _init_directory(
+        cls,
+        init_directory: Directory,
+        init_context_directory: PythonModuleInitContextDirectory,
+        project_metadata: ProjectMetadata,
+        scm: SCMType,
+        platform: PlatformType,
+    ) -> Directory:
+        """Build the initialization directory.
+
+        Args:
+            init_directory: The dagger directory to initialize.
+            init_context_directory: SDK module initialization directory context.
+            project_metadata: Project metadata.
+            scm: Project Source Code Management (SCM) list to be targeted or configured.
+            platform: The container platform used for initialization.
+
+        Returns:
+            The initialization directory.
+        """
+        init_directory = await super()._init_directory(
+            init_directory, init_context_directory, project_metadata, scm, platform
+        )
+        tests_unit_path_str = str(TESTS_UNIT_PATH)
+        _coveragerc_template_file = TemplateFile(Path(".coveragerc"))
+        # pytest.unit.ini
+        pytest_unit_init_template_mapping: Mapping = {
+            "project_coveragerc_path": str(_coveragerc_template_file.output_file_name),
+            "project_source_path": PROJECT_SOURCE_CODE_FOLDER,
+            "project_tests_path": tests_unit_path_str,
+        }
+        pytest_unit_ini_template = Template(
+            PYTHON_JINJA_ENVIRONMENT,
+            cls._pytest_unit_ini_template_file(),
+            pytest_unit_init_template_mapping,
+        )
+        init_directory = directory_with_new_file(init_directory, pytest_unit_ini_template)
+        # .coveragerc
+        _coveragerc_template_mapping: Mapping = {
+            "project_source_path": PROJECT_SOURCE_CODE_FOLDER,
+            "coverage_file_path": cls._coverage_file_name(),
+        }
+        _coveragerc_template = Template(
+            PYTHON_JINJA_ENVIRONMENT, _coveragerc_template_file, _coveragerc_template_mapping
+        )
+        init_directory = directory_with_new_file(init_directory, _coveragerc_template)
+        # <tests>/<tests unit>/
+        init_directory = init_directory.with_directory(tests_unit_path_str, core().directory())
+        return init_directory
+
+
+@dagger.object_type
+class Tester(PythonModule):
+    """Python SDK tester."""
+
+    @staticmethod
+    def _initializer_cls() -> type[TesterInitializer]:
+        """Initializer class.
+
+        Returns:
+            The initializer class.
+        """
+        return TesterInitializer
+
+    @final
+    @classmethod
+    async def __unit(cls, container: Container, keyword: OptionalKeywordType) -> Container:
+        """Unit test pipeline.
+
+        Args:
+            container: Project container.
+            keyword: Run tests that match substring expression.
+
+        Returns:
+            A container with the project test command executed.
+        """
+        initializer = cls._initializer_cls()
+        # Check that there is at last one test file.
+        config = ConfigParser()
+        pytest_unit_ini_output_path = initializer._pytest_unit_ini_template_file().output_path
+        pytest_unit_ini_file_contents = await container.file(
+            str(pytest_unit_ini_output_path)
+        ).contents()
+        config.read_string(pytest_unit_ini_file_contents)
+        tests_unit_extension = config["pytest"]["python_files"]
+        tests_unit_files = await container.directory(str(TESTS_UNIT_PATH)).glob(
+            tests_unit_extension
+        )
+        is_tests_unit_files = len(tests_unit_files) != 0
+        expect = ReturnType.SUCCESS if is_tests_unit_files else ReturnType.FAILURE
+        pytest_command = cls._build_uv_run_command(
+            ["pytest", f"--config-file={pytest_unit_ini_output_path}"]
+        )
+        if keyword:
+            pytest_command.extend([f"-k={keyword}", "--cov-fail-under=0"])
+        return container.with_exec(pytest_command, expect=expect)
+
+    @final
+    @dagger.function
+    async def unit(
+        self,
+        *,
+        keyword: OptionalKeywordDaggerType = OPTIONAL_KEYWORD_DAGGER_DEFAULT,
+        platform: PlatformDaggerType = PLATFORM_DAGGER_DEFAULT,
+    ) -> str:
+        """Run unit tests in the project of the provided source Directory."""
+        exclude = [".git/"]
+        container = await self._exec_container(self.source, exclude, platform)
+        container = await self.__unit(container, keyword)
+        try:
+            return await container.stdout()
+        except dagger.ExecError as exception:
+            self.log(exception)
+
+            raise
+
+    # @final
+    # @dagger.function
+    # async def coverage(
+    #     self,
+    #     *,
+    #     platform: PlatformType = PLATFORM_DEFAULT
+    # ) -> dagger.Directory:
+    #     """Run unit tests in the project of the provided source Directory."""
+    #     # TODO: add genbadge[coverage] to cls._base_container_python_packages()
+    #     container = await self.__pipeline(project, platform, None)
+    #     return (
+    #         container.with_exec(
+    #             [
+    #                 "uv",
+    #                 "run",
+    #                 "--no-project",
+    #                 "genbadge",
+    #                 "coverage",
+    #                 f"--input-file={self._coverage_file_name()}",
+    #                 f"--output-file={self._coverage_badge_file_path()}",
+    #             ]
+    #         )
+    #         .directory(".")
+    #         .filter(include=[str(self._coverage_file_path())])
+    #     )
+
+
+sdk_module: Final = Tester
