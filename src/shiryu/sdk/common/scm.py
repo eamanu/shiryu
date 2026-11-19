@@ -558,9 +558,7 @@ class GitLabStageId(Enum):
     )
     PUBLISH = GitLabStageProperties(
         "publish",
-        (
-            f"$CI_COMMIT_TAG =~ /^{MATCHING_TAGS_REGEX}$/",
-        ),
+        (f"$CI_COMMIT_TAG =~ /^{MATCHING_TAGS_REGEX}$/",),
     )
     QUALITY = GitLabStageProperties("quality", ())
     RELEASE = GitLabStageProperties(

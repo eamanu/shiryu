@@ -12,4 +12,6 @@ include:
     PLATFORM: "linux/amd64"
   script:
     - git fetch origin main:refs/remotes/origin/main || true
+    - TARGET_BRANCH="${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:-$CI_COMMIT_BRANCH}"
+    - if [ -n "$TARGET_BRANCH" ]; then git checkout -B "$TARGET_BRANCH" "$CI_COMMIT_SHA"; fi
     - dagger --load-module=gitlab.com/fvonbergen1/shiryu@${SHIRYU_VERSION} api call ${SDK_LANGUAGE} linter lint-vcs --branch-history="${BRANCH_HISTORY}" --platform="${PLATFORM}"

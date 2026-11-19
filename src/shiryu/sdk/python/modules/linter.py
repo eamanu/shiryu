@@ -111,13 +111,24 @@ class LinterInitializer(PythonModuleInitializer):
             post_script=(),
             artifacts=None,
         )
+        gitlab_pre_script = (
+            # Define the pre-script for GitLab jobs to fetch the main branch to ensure
+            # the target branch can be checked out correctly and run correctly the uv
+            # lint vcs history check.
+            f"git fetch origin main:refs/remotes/origin/{VCS_PRIMARY_BRANCH} || true",
+            # Also ensures that the GitLab job has the correct branch context before
+            # executing any scripts. Gitlab CI  doesn't ensure that the job is running
+            # on the correct branch, and it detaches the HEAD by default.
+            'TARGET_BRANCH="${{CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:-$CI_COMMIT_BRANCH}}"',
+            'if [ -n "$TARGET_BRANCH" ];then git checkout -B "$TARGET_BRANCH" "$CI_COMMIT_SHA";fi',
+        )
         gitlab_job_linter_lint_vcs = build_gitlab_job(
             sdk_language=sdk_language,
             sdk_module_name=sdk_module_name,
             sdk_module_function=sdk_module_function_lint_vcs,
             shiryu_version=shiryu_version,
             variables=(GitLabVariable("GIT_STRATEGY", "fetch"), GitLabVariable("GIT_DEPTH", "0")),
-            pre_script=(f"git fetch origin main:refs/remotes/origin/{VCS_PRIMARY_BRANCH} || true",),
+            pre_script=gitlab_pre_script,
             export_path=None,
             post_script=(),
             artifacts=None,
