@@ -1,6 +1,6 @@
 """auditor module."""
 
-from typing import Final, final
+from typing import Container, Final, final
 
 import dagger
 
@@ -140,5 +140,10 @@ class Auditor(PythonModule):
 
             raise
 
+    @final
+    @dagger.function(doc="Build the uv audit command.")
+    async def test_uv(self, *, platform: PlatformDaggerType = PLATFORM_DAGGER_DEFAULT) -> str:
+        container = await self._exec_container(self.source, [".git/"], platform)
+        return await container.with_exec(["sh", "-c", 'printf "%s" "${EMMA-}"']).stdout()
 
 sdk_module: Final = Auditor
